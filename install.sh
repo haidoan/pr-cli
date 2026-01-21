@@ -7,10 +7,10 @@
 # Installs pr1 command globally
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/haidoan/pr1/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/haidoan/pr-cli/main/install.sh | bash
 #
 #   # Or with sudo for /usr/local/bin:
-#   curl -fsSL https://raw.githubusercontent.com/haidoan/pr1/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/haidoan/pr-cli/main/install.sh | sudo bash
 #
 #   # Or locally:
 #   ./install.sh
@@ -19,7 +19,7 @@
 set -e
 
 VERSION="2.0.0"
-REPO_RAW_URL="https://raw.githubusercontent.com/haidoan/pr1/main"
+REPO_RAW_URL="https://raw.githubusercontent.com/haidoan/pr-cli/main"
 
 # Colors
 RED='\033[0;31m'
@@ -135,7 +135,7 @@ main() {
             log_error "Failed to download pr1"
             echo ""
             echo "Please check your internet connection and try again."
-            echo "Or install manually from: https://github.com/haidoan/pr1"
+            echo "Or install manually from: https://github.com/haidoan/pr-cli"
             exit 1
         fi
     fi

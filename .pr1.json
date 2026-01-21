@@ -1,8 +1,8 @@
 {
-  "$schema": "https://raw.githubusercontent.com/haidoan/pr1/main/schema.json",
+  "$schema": "https://raw.githubusercontent.com/haidoan/pr-cli/main/schema.json",
 
   "_comment": "pr1 - Per-repo configuration file",
-  "_docs": "https://github.com/haidoan/pr1#configuration",
+  "_docs": "https://github.com/haidoan/pr-cli#configuration",
   
   "reviewers": [
     "teammate1",
