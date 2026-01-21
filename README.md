@@ -43,6 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/haidoan/pr-cli/main/install.sh | ba
 pr1 --configure        # First time: select AI provider and enter API key
 pr1                    # Create PR from current branch to develop
 ```
+config file will be saved at ` ~/.pr1/config`
 
 ## Supported AI Providers
 
