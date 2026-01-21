@@ -1,0 +1,1099 @@
+#!/usr/bin/env bash
+
+#######################################################################
+# pr1 - AI-powered GitHub Pull Request Creator
+# Version: 2.0.0
+#
+# Creates GitHub PRs with AI-generated descriptions based on your commits.
+# Supports: Claude (Anthropic), Gemini (Google), OpenAI
+#
+# Configuration:
+#   Global: ~/.pr1/config (AI provider & API key) - REQUIRED
+#   Per-repo: .pr1.json (reviewers, prompts, settings) - OPTIONAL
+#
+# Usage: pr1 [options]
+#   -t, --target <branch>    Target branch (default: develop)
+#   -r, --reviewers <users>  Comma-separated reviewers
+#   -d, --draft              Create as draft PR
+#   --title <title>          Override auto-generated title
+#   --preview                Preview PR without creating
+#   --configure              Reconfigure AI provider
+#   --init                   Create .pr1.json template in current repo
+#   -h, --help               Show help
+#
+# Repository: https://github.com/haidoan/pr1
+# License: MIT
+#######################################################################
+
+set -e
+
+VERSION="2.0.0"
+
+#######################################################################
+# Colors & Formatting
+#######################################################################
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m' # No Color
+
+#######################################################################
+# Global Configuration
+#######################################################################
+
+GLOBAL_CONFIG_DIR="$HOME/.pr1"
+GLOBAL_CONFIG_FILE="$GLOBAL_CONFIG_DIR/config"
+REPO_CONFIG_FILE=".pr1.json"
+
+# Defaults (used when no config exists)
+DEFAULT_TARGET_BRANCH="develop"
+DEFAULT_DRAFT=false
+
+# Runtime variables (set by CLI args or config)
+TARGET_BRANCH=""
+DRAFT=false
+PREVIEW_ONLY=false
+REVIEWERS=""
+TITLE_OVERRIDE=""
+SKIP_CONFIRM=false
+DEBUG=false
+
+# Repo config variables (loaded from .pr-ai.json if exists)
+REPO_REVIEWERS=""
+REPO_TARGET_BRANCH=""
+REPO_DRAFT=""
+REPO_CUSTOM_PROMPT=""
+REPO_TEMPLATE=""
+REPO_TITLE_PREFIX=""
+REPO_EXCLUDE_FILES=""
+REPO_TICKET_PATTERN=""
+REPO_TICKET_URL=""
+
+#######################################################################
+# Logging Functions
+#######################################################################
+
+log_info() {
+    echo -e "${BLUE}ℹ${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}✓${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}⚠${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}✗${NC} $1"
+}
+
+log_debug() {
+    if [[ "$DEBUG" == "true" ]]; then
+        echo -e "${DIM}[DEBUG] $1${NC}"
+    fi
+}
+
+print_banner() {
+    echo -e "${CYAN}"
+    echo "╔═══════════════════════════════════════════════════════════╗"
+    echo "║                pr1 v${VERSION} - Smart PR Creator              ║"
+    echo "╚═══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+#######################################################################
+# Help & Version
+#######################################################################
+
+show_help() {
+    cat << 'EOF'
+pr1 - AI-powered GitHub Pull Request Creator
+
+USAGE:
+    pr1 [OPTIONS]
+
+OPTIONS:
+    -t, --target <branch>    Target branch to merge into (default: develop)
+    -r, --reviewers <users>  Comma-separated list of GitHub usernames
+    -d, --draft              Create as draft PR
+    --title <title>          Override auto-generated title
+    --preview                Preview PR description without creating
+    --configure              Reconfigure AI provider and API key
+    --init                   Create .pr1.json template in current repo
+    -y, --yes                Skip confirmation prompt
+    -v, --version            Show version
+    --debug                  Enable debug output
+    -h, --help               Show this help message
+
+CONFIGURATION:
+
+  Global config (~/.pr1/config) - REQUIRED on first run:
+    - AI provider (claude/gemini/openai)
+    - API key
+
+  Per-repo config (.pr1.json) - OPTIONAL:
+    - Default reviewers
+    - Default target branch
+    - Custom PR description template
+    - Custom prompt instructions
+
+  Without .pr1.json, sensible defaults are used:
+    - Target branch: develop
+    - Reviewers: none (you can add with -r)
+    - Standard PR template
+
+EXAMPLES:
+    pr1                           # Create PR with defaults
+    pr1 -t main                   # Create PR to main branch
+    pr1 -r "alice,bob"            # Add reviewers
+    pr1 -d                        # Create as draft
+    pr1 --preview                 # Preview without creating
+    pr1 -t main -r "alice" -d     # Combine options
+    pr1 --init                    # Create .pr1.json template
+
+.PR1.JSON EXAMPLE (optional):
+    {
+      "reviewers": ["alice", "bob"],
+      "targetBranch": "main",
+      "draft": false,
+      "customPrompt": "Focus on security implications"
+    }
+
+SUPPORTED AI PROVIDERS:
+    - claude  : Anthropic Claude (https://console.anthropic.com/)
+    - gemini  : Google Gemini (https://makersuite.google.com/app/apikey)
+    - openai  : OpenAI GPT-4 (https://platform.openai.com/api-keys)
+
+EOF
+    exit 0
+}
+
+show_version() {
+    echo "pr1 version $VERSION"
+    exit 0
+}
+
+#######################################################################
+# Dependency Checks
+#######################################################################
+
+check_dependencies() {
+    local missing=()
+    
+    if ! command -v git &>/dev/null; then
+        missing+=("git")
+    fi
+    
+    if ! command -v gh &>/dev/null; then
+        missing+=("gh (GitHub CLI) - Install: https://cli.github.com/")
+    fi
+    
+    if ! command -v curl &>/dev/null; then
+        missing+=("curl")
+    fi
+    
+    if ! command -v jq &>/dev/null; then
+        missing+=("jq - Install: brew install jq (macOS) or apt install jq (Linux)")
+    fi
+    
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "Missing required dependencies:"
+        for dep in "${missing[@]}"; do
+            echo "  - $dep"
+        done
+        exit 1
+    fi
+    
+    log_debug "All dependencies found"
+}
+
+check_git_repo() {
+    if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+        log_error "Not in a git repository"
+        exit 1
+    fi
+    log_debug "Git repository confirmed"
+}
+
+check_gh_auth() {
+    if ! gh auth status &>/dev/null 2>&1; then
+        log_error "GitHub CLI not authenticated"
+        echo ""
+        echo "Please run: gh auth login"
+        exit 1
+    fi
+    log_debug "GitHub CLI authenticated"
+}
+
+#######################################################################
+# Global Configuration Management
+#######################################################################
+
+load_global_config() {
+    if [[ -f "$GLOBAL_CONFIG_FILE" ]]; then
+        source "$GLOBAL_CONFIG_FILE"
+        if [[ -n "$AI_PROVIDER" && -n "$API_KEY" ]]; then
+            log_debug "Loaded global config: provider=$AI_PROVIDER"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+save_global_config() {
+    local provider="$1"
+    local api_key="$2"
+
+    mkdir -p "$GLOBAL_CONFIG_DIR"
+    cat > "$GLOBAL_CONFIG_FILE" << EOF
+# pr1 Global Configuration
+# Created: $(date)
+AI_PROVIDER="$provider"
+API_KEY="$api_key"
+EOF
+    chmod 600 "$GLOBAL_CONFIG_FILE"
+    log_success "Configuration saved to $GLOBAL_CONFIG_FILE"
+}
+
+configure_interactive() {
+    print_banner
+    
+    echo "Select your AI provider:"
+    echo ""
+    echo -e "  ${BOLD}1)${NC} claude  - Anthropic Claude ${DIM}(recommended)${NC}"
+    echo -e "     ${DIM}Get key: https://console.anthropic.com/${NC}"
+    echo ""
+    echo -e "  ${BOLD}2)${NC} gemini  - Google Gemini"
+    echo -e "     ${DIM}Get key: https://makersuite.google.com/app/apikey${NC}"
+    echo ""
+    echo -e "  ${BOLD}3)${NC} openai  - OpenAI GPT-4"
+    echo -e "     ${DIM}Get key: https://platform.openai.com/api-keys${NC}"
+    echo ""
+    
+    local provider=""
+    while true; do
+        read -p "Enter choice (1-3 or name): " choice
+        case "$choice" in
+            1|claude)  provider="claude"; break ;;
+            2|gemini)  provider="gemini"; break ;;
+            3|openai)  provider="openai"; break ;;
+            *) echo "Invalid choice. Please enter 1, 2, 3, or provider name." ;;
+        esac
+    done
+    
+    echo ""
+    log_info "Selected: $provider"
+    echo ""
+    
+    local api_key=""
+    case "$provider" in
+        claude)
+            read -p "Enter Anthropic API key (sk-ant-...): " api_key
+            ;;
+        gemini)
+            read -p "Enter Google API key: " api_key
+            ;;
+        openai)
+            read -p "Enter OpenAI API key (sk-...): " api_key
+            ;;
+    esac
+    
+    if [[ -z "$api_key" ]]; then
+        log_error "API key cannot be empty"
+        exit 1
+    fi
+    
+    save_global_config "$provider" "$api_key"
+    
+    # Reload config
+    AI_PROVIDER="$provider"
+    API_KEY="$api_key"
+    
+    echo ""
+    log_success "Configuration complete! You can now use pr1."
+    echo ""
+}
+
+ensure_configured() {
+    if ! load_global_config; then
+        log_warn "AI provider not configured. Let's set it up."
+        echo ""
+        configure_interactive
+    fi
+}
+
+#######################################################################
+# Per-Repo Configuration Management (Optional)
+#######################################################################
+
+find_repo_config() {
+    local dir="$PWD"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -f "$dir/$REPO_CONFIG_FILE" ]]; then
+            echo "$dir/$REPO_CONFIG_FILE"
+            return 0
+        fi
+        dir=$(dirname "$dir")
+    done
+    return 1
+}
+
+load_repo_config() {
+    local config_path
+    config_path=$(find_repo_config 2>/dev/null) || {
+        log_debug "No .pr1.json found (optional - using defaults)"
+        return 1
+    }
+    
+    if [[ -f "$config_path" ]]; then
+        log_debug "Loading repo config from: $config_path"
+        
+        # Parse JSON config with safe defaults
+        REPO_REVIEWERS=$(jq -r '.reviewers // [] | join(",")' "$config_path" 2>/dev/null || echo "")
+        REPO_TARGET_BRANCH=$(jq -r '.targetBranch // empty' "$config_path" 2>/dev/null || echo "")
+        REPO_DRAFT=$(jq -r '.draft // false' "$config_path" 2>/dev/null || echo "false")
+        REPO_CUSTOM_PROMPT=$(jq -r '.customPrompt // empty' "$config_path" 2>/dev/null || echo "")
+        REPO_TEMPLATE=$(jq -c '.template // empty' "$config_path" 2>/dev/null || echo "")
+        REPO_TITLE_PREFIX=$(jq -r '.titlePrefix // empty' "$config_path" 2>/dev/null || echo "")
+        REPO_EXCLUDE_FILES=$(jq -r '.excludeFiles // [] | join("|")' "$config_path" 2>/dev/null || echo "")
+        REPO_TICKET_PATTERN=$(jq -r '.ticketPattern // empty' "$config_path" 2>/dev/null || echo "")
+        REPO_TICKET_URL=$(jq -r '.ticketUrl // empty' "$config_path" 2>/dev/null || echo "")
+        
+        log_debug "Repo config loaded: reviewers=$REPO_REVIEWERS, target=$REPO_TARGET_BRANCH"
+        return 0
+    fi
+    
+    return 1
+}
+
+init_repo_config() {
+    if [[ -f "$REPO_CONFIG_FILE" ]]; then
+        log_warn "$REPO_CONFIG_FILE already exists in this directory"
+        read -p "Overwrite? (y/N): " confirm
+        if [[ ! "$confirm" =~ ^[Yy] ]]; then
+            log_info "Cancelled"
+            exit 0
+        fi
+    fi
+
+    cat > "$REPO_CONFIG_FILE" << 'TEMPLATE'
+{
+  "$schema": "https://raw.githubusercontent.com/haidoan/pr1/main/schema.json",
+  "_comment": "pr1 - Per-repo configuration (all fields are optional)",
+
+  "reviewers": [
+    "reviewer1",
+    "reviewer2"
+  ],
+
+  "targetBranch": "develop",
+
+  "draft": false,
+
+  "titlePrefix": "",
+
+  "customPrompt": "",
+
+  "template": {
+    "sections": ["summary", "changes", "testing"],
+    "customSections": [
+      {
+        "name": "Breaking Changes",
+        "prompt": "List any breaking changes, or write 'None'",
+        "optional": true
+      }
+    ]
+  },
+
+  "excludeFiles": [
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml"
+  ],
+
+  "ticketPattern": "[A-Z]+-[0-9]+",
+
+  "ticketUrl": "https://yourcompany.atlassian.net/browse/{ticket}"
+}
+TEMPLATE
+
+    log_success "Created $REPO_CONFIG_FILE"
+    echo ""
+    echo "This file is ${BOLD}optional${NC}. Edit it to customize:"
+    echo "  • reviewers     - Default reviewers for this repo"
+    echo "  • targetBranch  - Default branch to merge into"
+    echo "  • customPrompt  - Additional AI instructions"
+    echo "  • template      - PR description sections"
+    echo ""
+    echo "Delete any fields you don't need - all are optional."
+    echo ""
+}
+
+#######################################################################
+# Git Functions
+#######################################################################
+
+get_current_branch() {
+    git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null
+}
+
+resolve_target_branch() {
+    local target="$1"
+    
+    # Try local branch first
+    if git rev-parse --verify "$target" &>/dev/null; then
+        echo "$target"
+        return 0
+    fi
+    
+    # Try remote branch
+    if git rev-parse --verify "origin/$target" &>/dev/null; then
+        echo "origin/$target"
+        return 0
+    fi
+    
+    log_error "Target branch '$target' not found (checked local and origin)"
+    echo ""
+    echo "Available branches:"
+    git branch -a | head -20
+    exit 1
+}
+
+get_commits() {
+    local target="$1"
+    git log "$target..HEAD" --oneline 2>/dev/null || echo ""
+}
+
+get_commit_messages() {
+    local target="$1"
+    git log "$target..HEAD" --pretty=format:"### %s%n%b%n" 2>/dev/null || echo ""
+}
+
+get_diff_stat() {
+    local target="$1"
+    local exclude_pattern="$2"
+    
+    local stat
+    stat=$(git diff "$target" --stat 2>/dev/null || echo "")
+    
+    # Filter excluded files if pattern provided
+    if [[ -n "$exclude_pattern" && -n "$stat" ]]; then
+        stat=$(echo "$stat" | grep -vE "$exclude_pattern" || echo "$stat")
+    fi
+    
+    echo "$stat"
+}
+
+get_diff() {
+    local target="$1"
+    local exclude_pattern="$2"
+    local max_size=80000  # ~80KB to stay under API limits
+    
+    local diff
+    diff=$(git diff "$target" 2>/dev/null || echo "")
+    
+    # Filter excluded files if pattern provided
+    if [[ -n "$exclude_pattern" && -n "$diff" ]]; then
+        # Create exclude args for git diff
+        local exclude_args=""
+        IFS='|' read -ra patterns <<< "$exclude_pattern"
+        for pattern in "${patterns[@]}"; do
+            exclude_args="$exclude_args :(exclude)$pattern"
+        done
+        diff=$(git diff "$target" -- . $exclude_args 2>/dev/null || echo "$diff")
+    fi
+    
+    # Truncate if too large
+    if [[ ${#diff} -gt $max_size ]]; then
+        diff="${diff:0:$max_size}"$'\n\n... [diff truncated due to size - showing first 80KB]'
+    fi
+    
+    echo "$diff"
+}
+
+extract_ticket() {
+    local branch="$1"
+    local pattern="${2:-[A-Za-z]+-[0-9]+}"
+    
+    if [[ $branch =~ $pattern ]]; then
+        echo "${BASH_REMATCH[0]}" | tr '[:lower:]' '[:upper:]'
+    fi
+}
+
+generate_title() {
+    local branch="$1"
+    local prefix="$2"
+    local ticket_pattern="$3"
+    
+    # Extract ticket number
+    local ticket
+    ticket=$(extract_ticket "$branch" "$ticket_pattern")
+    
+    # Remove common branch prefixes
+    local desc
+    desc=$(echo "$branch" | sed -E 's/^(feature|fix|hotfix|bugfix|chore|refactor|docs|test|ci)s?\///')
+    
+    # Remove ticket from description if present
+    if [[ -n "$ticket" ]]; then
+        desc=$(echo "$desc" | sed -E "s/${ticket}-?//i")
+    fi
+    
+    # Clean up: replace hyphens/underscores with spaces, trim
+    desc=$(echo "$desc" | tr '-_' '  ' | sed 's/  */ /g' | xargs)
+    
+    # Build final title
+    local title=""
+    [[ -n "$prefix" ]] && title="$prefix "
+    [[ -n "$ticket" ]] && title="${title}[$ticket] "
+    title="${title}$desc"
+    
+    # Fallback if empty
+    echo "${title:-Pull Request}"
+}
+
+#######################################################################
+# AI Provider Functions
+#######################################################################
+
+call_claude() {
+    local prompt="$1"
+    
+    log_debug "Calling Claude API..."
+    
+    local response
+    response=$(curl -s --max-time 60 "https://api.anthropic.com/v1/messages" \
+        -H "Content-Type: application/json" \
+        -H "x-api-key: $API_KEY" \
+        -H "anthropic-version: 2023-06-01" \
+        -d "$(jq -n \
+            --arg prompt "$prompt" \
+            '{
+                model: "claude-sonnet-4-20250514",
+                max_tokens: 2048,
+                messages: [{role: "user", content: $prompt}]
+            }')" 2>&1)
+    
+    # Check for curl errors
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to connect to Claude API"
+        log_debug "Response: $response"
+        exit 1
+    fi
+    
+    # Check for API errors
+    if echo "$response" | jq -e '.error' &>/dev/null; then
+        local error_msg
+        error_msg=$(echo "$response" | jq -r '.error.message // .error.type // "Unknown error"')
+        log_error "Claude API error: $error_msg"
+        exit 1
+    fi
+    
+    # Extract text
+    local text
+    text=$(echo "$response" | jq -r '.content[0].text // empty')
+    
+    if [[ -z "$text" ]]; then
+        log_error "Empty response from Claude API"
+        log_debug "Full response: $response"
+        exit 1
+    fi
+    
+    echo "$text"
+}
+
+call_gemini() {
+    local prompt="$1"
+    
+    log_debug "Calling Gemini API..."
+    
+    local response
+    response=$(curl -s --max-time 60 \
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n \
+            --arg prompt "$prompt" \
+            '{
+                contents: [{parts: [{text: $prompt}]}],
+                generationConfig: {maxOutputTokens: 2048}
+            }')" 2>&1)
+    
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to connect to Gemini API"
+        exit 1
+    fi
+    
+    if echo "$response" | jq -e '.error' &>/dev/null; then
+        local error_msg
+        error_msg=$(echo "$response" | jq -r '.error.message // "Unknown error"')
+        log_error "Gemini API error: $error_msg"
+        exit 1
+    fi
+    
+    local text
+    text=$(echo "$response" | jq -r '.candidates[0].content.parts[0].text // empty')
+    
+    if [[ -z "$text" ]]; then
+        log_error "Empty response from Gemini API"
+        exit 1
+    fi
+    
+    echo "$text"
+}
+
+call_openai() {
+    local prompt="$1"
+    
+    log_debug "Calling OpenAI API..."
+    
+    local response
+    response=$(curl -s --max-time 60 "https://api.openai.com/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $API_KEY" \
+        -d "$(jq -n \
+            --arg prompt "$prompt" \
+            '{
+                model: "gpt-4o",
+                max_tokens: 2048,
+                messages: [{role: "user", content: $prompt}]
+            }')" 2>&1)
+    
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to connect to OpenAI API"
+        exit 1
+    fi
+    
+    if echo "$response" | jq -e '.error' &>/dev/null; then
+        local error_msg
+        error_msg=$(echo "$response" | jq -r '.error.message // "Unknown error"')
+        log_error "OpenAI API error: $error_msg"
+        exit 1
+    fi
+    
+    local text
+    text=$(echo "$response" | jq -r '.choices[0].message.content // empty')
+    
+    if [[ -z "$text" ]]; then
+        log_error "Empty response from OpenAI API"
+        exit 1
+    fi
+    
+    echo "$text"
+}
+
+#######################################################################
+# Prompt Building
+#######################################################################
+
+build_prompt() {
+    local current_branch="$1"
+    local target_branch="$2"
+    local commits="$3"
+    local commit_messages="$4"
+    local diff_stat="$5"
+    local diff="$6"
+    local custom_prompt="$7"
+    local template="$8"
+    
+    # Build template section instructions
+    local template_instructions=""
+    if [[ -n "$template" && "$template" != "null" && "$template" != "" ]]; then
+        local sections
+        sections=$(echo "$template" | jq -r '.sections // ["summary", "changes", "testing"] | join(", ")' 2>/dev/null || echo "summary, changes, testing")
+        template_instructions="Include these sections: $sections"
+        
+        # Process custom sections
+        local custom_sections
+        custom_sections=$(echo "$template" | jq -c '.customSections // []' 2>/dev/null || echo "[]")
+        if [[ "$custom_sections" != "[]" && "$custom_sections" != "null" ]]; then
+            template_instructions="$template_instructions
+
+Additional sections to include:"
+            while IFS= read -r section; do
+                local name prompt optional
+                name=$(echo "$section" | jq -r '.name // empty')
+                prompt=$(echo "$section" | jq -r '.prompt // empty')
+                optional=$(echo "$section" | jq -r '.optional // false')
+                if [[ -n "$name" && -n "$prompt" ]]; then
+                    if [[ "$optional" == "true" ]]; then
+                        template_instructions="$template_instructions
+- ## $name (optional): $prompt"
+                    else
+                        template_instructions="$template_instructions
+- ## $name: $prompt"
+                    fi
+                fi
+            done < <(echo "$custom_sections" | jq -c '.[]' 2>/dev/null)
+        fi
+    fi
+    
+    # Build the full prompt
+    cat << PROMPT
+You are an expert developer writing a GitHub Pull Request description.
+
+Analyze the commits and code changes below, then generate a clear, professional PR description.
+
+=== BRANCH INFORMATION ===
+Current branch: $current_branch
+Target branch: $target_branch
+
+=== COMMITS ===
+$commits
+
+=== COMMIT MESSAGES ===
+$commit_messages
+
+=== FILES CHANGED ===
+$diff_stat
+
+=== CODE DIFF ===
+$diff
+
+${custom_prompt:+=== ADDITIONAL INSTRUCTIONS ===
+$custom_prompt
+
+}${template_instructions:+=== TEMPLATE REQUIREMENTS ===
+$template_instructions
+
+}=== OUTPUT FORMAT ===
+Generate a PR description with EXACTLY this format. Output ONLY the description, no other text:
+
+## Summary
+[1-2 sentences explaining WHAT this PR does and WHY]
+
+## Changes
+- [Specific change 1 - describe what was changed and why]
+- [Specific change 2]
+- [Specific change 3]
+[Add more bullet points as needed]
+
+## Testing
+- [ ] [Specific test case or verification step]
+- [ ] [Another test scenario]
+
+=== GUIDELINES ===
+- Be concise but specific
+- Focus on WHAT changed and WHY, not just listing files
+- Use technical language appropriate for code review
+- Keep the summary to 1-2 sentences
+- List 3-7 key changes as bullet points
+- Include 2-4 testing items as a checklist
+PROMPT
+}
+
+#######################################################################
+# PR Description Generation
+#######################################################################
+
+generate_description() {
+    local prompt="$1"
+    
+    log_info "Generating PR description with $AI_PROVIDER..."
+    
+    local description
+    case "$AI_PROVIDER" in
+        claude)
+            description=$(call_claude "$prompt")
+            ;;
+        gemini)
+            description=$(call_gemini "$prompt")
+            ;;
+        openai)
+            description=$(call_openai "$prompt")
+            ;;
+        *)
+            log_error "Unknown AI provider: $AI_PROVIDER"
+            log_info "Run 'pr1 --configure' to set up a valid provider"
+            exit 1
+            ;;
+    esac
+    
+    echo "$description"
+}
+
+#######################################################################
+# PR Creation
+#######################################################################
+
+create_pr() {
+    local title="$1"
+    local body="$2"
+    local target="$3"
+    local source="$4"
+    local reviewers="$5"
+    local draft="$6"
+    
+    # Push branch to origin
+    log_info "Pushing branch '$source' to origin..."
+    if ! git push -u origin "$source" 2>/dev/null; then
+        # Branch might already exist, try force-with-lease
+        git push origin "$source" 2>/dev/null || true
+    fi
+    
+    # Build gh pr create command
+    local gh_args=()
+    gh_args+=(pr create)
+    gh_args+=(--base "$target")
+    gh_args+=(--head "$source")
+    gh_args+=(--title "$title")
+    gh_args+=(--body "$body")
+    
+    if [[ -n "$reviewers" ]]; then
+        gh_args+=(--reviewer "$reviewers")
+    fi
+    
+    if [[ "$draft" == "true" ]]; then
+        gh_args+=(--draft)
+    fi
+    
+    log_info "Creating pull request..."
+    log_debug "Command: gh ${gh_args[*]}"
+    
+    local result
+    if result=$(gh "${gh_args[@]}" 2>&1); then
+        echo ""
+        log_success "Pull request created successfully!"
+        echo ""
+        echo -e "${GREEN}${BOLD}$result${NC}"
+        echo ""
+    else
+        log_error "Failed to create pull request"
+        echo "$result"
+        exit 1
+    fi
+}
+
+#######################################################################
+# Main Function
+#######################################################################
+
+main() {
+    # Parse command line arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t|--target)
+                if [[ -z "$2" || "$2" == -* ]]; then
+                    log_error "Option $1 requires a branch name"
+                    exit 1
+                fi
+                TARGET_BRANCH="$2"
+                shift 2
+                ;;
+            -r|--reviewers)
+                if [[ -z "$2" || "$2" == -* ]]; then
+                    log_error "Option $1 requires reviewer names"
+                    exit 1
+                fi
+                REVIEWERS="$2"
+                shift 2
+                ;;
+            -d|--draft)
+                DRAFT=true
+                shift
+                ;;
+            --title)
+                if [[ -z "$2" || "$2" == -* ]]; then
+                    log_error "Option $1 requires a title"
+                    exit 1
+                fi
+                TITLE_OVERRIDE="$2"
+                shift 2
+                ;;
+            --preview)
+                PREVIEW_ONLY=true
+                shift
+                ;;
+            --configure)
+                configure_interactive
+                exit 0
+                ;;
+            --init)
+                init_repo_config
+                exit 0
+                ;;
+            -y|--yes)
+                SKIP_CONFIRM=true
+                shift
+                ;;
+            -v|--version)
+                show_version
+                ;;
+            --debug)
+                DEBUG=true
+                shift
+                ;;
+            -h|--help)
+                show_help
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                echo "Use 'pr1 --help' for usage information"
+                exit 1
+                ;;
+            *)
+                log_error "Unexpected argument: $1"
+                echo "Use 'pr1 --help' for usage information"
+                exit 1
+                ;;
+        esac
+    done
+    
+    # Check all dependencies
+    check_dependencies
+    check_git_repo
+    check_gh_auth
+    
+    # Load configurations
+    ensure_configured
+    load_repo_config || true  # Optional, don't fail if missing
+    
+    # Apply configuration hierarchy: CLI args > repo config > defaults
+    if [[ -z "$TARGET_BRANCH" ]]; then
+        TARGET_BRANCH="${REPO_TARGET_BRANCH:-$DEFAULT_TARGET_BRANCH}"
+    fi
+    
+    if [[ -z "$REVIEWERS" ]]; then
+        REVIEWERS="$REPO_REVIEWERS"
+    fi
+    
+    if [[ "$DRAFT" != "true" && "$REPO_DRAFT" == "true" ]]; then
+        DRAFT=true
+    fi
+    
+    log_debug "Final config: target=$TARGET_BRANCH, reviewers=$REVIEWERS, draft=$DRAFT"
+    
+    # Get current branch
+    local current_branch
+    current_branch=$(get_current_branch)
+    
+    if [[ -z "$current_branch" ]]; then
+        log_error "Could not determine current branch"
+        exit 1
+    fi
+    
+    if [[ "$current_branch" == "$TARGET_BRANCH" ]]; then
+        log_error "Current branch '$current_branch' is the same as target branch"
+        echo "Please checkout a feature branch first"
+        exit 1
+    fi
+    
+    # Resolve and validate target branch
+    local resolved_target
+    resolved_target=$(resolve_target_branch "$TARGET_BRANCH")
+    
+    echo ""
+    log_info "Current branch: ${BOLD}$current_branch${NC}"
+    log_info "Target branch:  ${BOLD}$TARGET_BRANCH${NC}"
+    
+    # Get commits between branches
+    local commits
+    commits=$(get_commits "$resolved_target")
+    
+    if [[ -z "$commits" ]]; then
+        log_error "No commits found between '$current_branch' and '$TARGET_BRANCH'"
+        echo ""
+        echo "Make sure you have commits that are not in $TARGET_BRANCH:"
+        echo "  git log $TARGET_BRANCH..HEAD --oneline"
+        exit 1
+    fi
+    
+    local commit_count
+    commit_count=$(echo "$commits" | wc -l | xargs)
+    log_info "Commits: ${BOLD}$commit_count${NC}"
+    echo ""
+    
+    # Display commits
+    echo -e "${CYAN}━━━ Commits ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo "$commits"
+    echo ""
+    
+    # Get diff information
+    local commit_messages diff_stat diff
+    commit_messages=$(get_commit_messages "$resolved_target")
+    diff_stat=$(get_diff_stat "$resolved_target" "$REPO_EXCLUDE_FILES")
+    diff=$(get_diff "$resolved_target" "$REPO_EXCLUDE_FILES")
+    
+    # Display changed files
+    echo -e "${CYAN}━━━ Files Changed ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo "$diff_stat"
+    echo ""
+    
+    # Generate PR title
+    local title
+    if [[ -n "$TITLE_OVERRIDE" ]]; then
+        title="$TITLE_OVERRIDE"
+    else
+        title=$(generate_title "$current_branch" "$REPO_TITLE_PREFIX" "$REPO_TICKET_PATTERN")
+    fi
+    
+    # Build prompt and generate description
+    local prompt description
+    prompt=$(build_prompt \
+        "$current_branch" \
+        "$TARGET_BRANCH" \
+        "$commits" \
+        "$commit_messages" \
+        "$diff_stat" \
+        "$diff" \
+        "$REPO_CUSTOM_PROMPT" \
+        "$REPO_TEMPLATE")
+    
+    log_debug "Prompt length: ${#prompt} characters"
+    
+    description=$(generate_description "$prompt")
+    
+    # Display PR preview
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}                      PR PREVIEW                            ${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "${YELLOW}Title:${NC} $title"
+    echo ""
+    echo -e "${YELLOW}Description:${NC}"
+    echo "$description"
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    
+    # Display additional info
+    if [[ -n "$REVIEWERS" ]]; then
+        echo -e "${YELLOW}Reviewers:${NC} $REVIEWERS"
+    fi
+    if [[ "$DRAFT" == "true" ]]; then
+        echo -e "${YELLOW}Type:${NC} Draft PR"
+    fi
+    echo ""
+    
+    # Preview mode - exit without creating
+    if [[ "$PREVIEW_ONLY" == "true" ]]; then
+        log_info "Preview mode - PR was not created"
+        echo ""
+        echo "To create this PR, run without --preview flag"
+        exit 0
+    fi
+    
+    # Confirm creation
+    if [[ "$SKIP_CONFIRM" != "true" ]]; then
+        echo -e -n "Create this PR? [${GREEN}Y${NC}/n]: "
+        read -r confirm
+        if [[ "$confirm" =~ ^[Nn] ]]; then
+            log_warn "Cancelled by user"
+            exit 0
+        fi
+    fi
+    
+    # Create the PR
+    create_pr "$title" "$description" "$TARGET_BRANCH" "$current_branch" "$REVIEWERS" "$DRAFT"
+}
+
+#######################################################################
+# Entry Point
+#######################################################################
+
+main "$@"

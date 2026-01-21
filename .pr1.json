@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/haidoan/pr1/main/schema.json",
+
+  "_comment": "pr1 - Per-repo configuration file",
+  "_docs": "https://github.com/haidoan/pr1#configuration",
+  
+  "reviewers": [
+    "teammate1",
+    "teammate2"
+  ],
+  
+  "targetBranch": "develop",
+  
+  "draft": false,
+  
+  "titlePrefix": "",
+  
+  "template": {
+    "sections": ["summary", "changes", "testing"],
+    
+    "summaryPrompt": "Explain what this PR does and why in 1-2 sentences",
+    "changesPrompt": "List the key changes as specific bullet points",
+    "testingPrompt": "Provide a testing checklist",
+    
+    "customSections": [
+      {
+        "name": "Breaking Changes",
+        "prompt": "List any breaking changes. Write 'None' if there are no breaking changes",
+        "optional": true
+      }
+    ]
+  },
+  
+  "customPrompt": "",
+  
+  "excludeFiles": [
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "*.generated.*"
+  ],
+  
+  "ticketPattern": "[A-Z]+-[0-9]+",
+  
+  "ticketUrl": "https://yourcompany.atlassian.net/browse/{ticket}"
+}

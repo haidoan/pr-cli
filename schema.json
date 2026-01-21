@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/haidoan/pr1/main/schema.json",
+  "title": "pr1 Configuration",
+  "description": "Configuration file for pr1 CLI tool",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference"
+    },
+    "_comment": {
+      "type": "string",
+      "description": "Optional comment for documentation"
+    },
+    "_docs": {
+      "type": "string",
+      "description": "Link to documentation"
+    },
+    "reviewers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Default GitHub usernames to request review from",
+      "examples": [["alice", "bob"]]
+    },
+    "targetBranch": {
+      "type": "string",
+      "description": "Default target branch for PRs",
+      "default": "develop",
+      "examples": ["main", "develop", "master"]
+    },
+    "draft": {
+      "type": "boolean",
+      "description": "Create PRs as draft by default",
+      "default": false
+    },
+    "titlePrefix": {
+      "type": "string",
+      "description": "Prefix to add to all PR titles",
+      "examples": ["[WIP]", "[REVIEW]"]
+    },
+    "template": {
+      "type": "object",
+      "description": "PR description template configuration",
+      "properties": {
+        "sections": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["summary", "changes", "testing", "breaking", "notes"]
+          },
+          "description": "Sections to include in PR description",
+          "default": ["summary", "changes", "testing"]
+        },
+        "summaryPrompt": {
+          "type": "string",
+          "description": "Custom prompt for the Summary section"
+        },
+        "changesPrompt": {
+          "type": "string",
+          "description": "Custom prompt for the Changes section"
+        },
+        "testingPrompt": {
+          "type": "string",
+          "description": "Custom prompt for the Testing section"
+        },
+        "customSections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Section header name"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "Instructions for AI to generate this section"
+              },
+              "optional": {
+                "type": "boolean",
+                "description": "Whether this section can be omitted if not applicable",
+                "default": false
+              }
+            },
+            "required": ["name", "prompt"]
+          },
+          "description": "Additional custom sections for the PR description"
+        }
+      }
+    },
+    "customPrompt": {
+      "type": "string",
+      "description": "Additional instructions for the AI when generating descriptions",
+      "examples": [
+        "Focus on security implications",
+        "Always mention performance impact",
+        "Use technical language appropriate for senior engineers"
+      ]
+    },
+    "excludeFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "File patterns to exclude from diff analysis",
+      "examples": [["package-lock.json", "yarn.lock", "*.generated.*"]]
+    },
+    "ticketPattern": {
+      "type": "string",
+      "description": "Regex pattern to extract ticket numbers from branch names",
+      "default": "[A-Z]+-[0-9]+",
+      "examples": ["JIRA-[0-9]+", "GH-[0-9]+", "#[0-9]+"]
+    },
+    "ticketUrl": {
+      "type": "string",
+      "description": "URL template for ticket links. Use {ticket} as placeholder",
+      "examples": [
+        "https://yourcompany.atlassian.net/browse/{ticket}",
+        "https://github.com/org/repo/issues/{ticket}"
+      ]
+    }
+  },
+  "additionalProperties": false
+}
