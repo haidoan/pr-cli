@@ -166,6 +166,12 @@ EXAMPLES:
       "customPrompt": "Focus on security implications"
     }
 
+RELEASE COMMANDS:
+    pr1 release sprint    Create sprint release (minor version bump)
+    pr1 release hotfix    Create hotfix release (patch version bump)
+
+    Run 'pr1 release' for more details.
+
 SUPPORTED AI PROVIDERS:
     - claude   : Anthropic Claude (https://console.anthropic.com/)
     - gemini   : Google Gemini (https://makersuite.google.com/app/apikey)
@@ -867,6 +873,328 @@ generate_description() {
 }
 
 #######################################################################
+# Release Functions
+#######################################################################
+
+show_release_help() {
+    cat << 'EOF'
+pr1 release - Create release branches and PRs
+
+USAGE:
+    pr1 release <command>
+
+COMMANDS:
+    sprint    Create sprint release (minor version bump)
+              - Branches from develop
+              - Creates release/vX.Y.0 branch
+              - Runs npm run release:minor
+
+    hotfix    Create hotfix release (patch version bump)
+              - Branches from main
+              - Creates hotfix/vX.Y.Z branch
+              - Runs npm run release:patch
+
+EXAMPLES:
+    pr1 release sprint    # Create sprint release (1.2.0 → 1.3.0)
+    pr1 release hotfix    # Create hotfix release (1.2.3 → 1.2.4)
+
+EOF
+    exit 0
+}
+
+check_release_dependencies() {
+    local missing=()
+
+    if ! command -v git &>/dev/null; then
+        missing+=("git")
+    fi
+
+    if ! command -v gh &>/dev/null; then
+        missing+=("gh (GitHub CLI) - Install: https://cli.github.com/")
+    fi
+
+    if ! command -v node &>/dev/null; then
+        missing+=("node")
+    fi
+
+    if ! command -v npm &>/dev/null; then
+        missing+=("npm")
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "Missing required dependencies:"
+        for dep in "${missing[@]}"; do
+            echo "  - $dep"
+        done
+        exit 1
+    fi
+}
+
+check_package_json() {
+    if [[ ! -f "package.json" ]]; then
+        log_error "package.json not found. Make sure you're in the project root directory."
+        exit 1
+    fi
+}
+
+check_uncommitted_changes() {
+    if [[ -n "$(git status --porcelain)" ]]; then
+        log_warn "You have uncommitted changes:"
+        git status --short
+        echo ""
+        read -p "Continue anyway? [y/N]: " -r confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            log_error "Aborting release process."
+            exit 1
+        fi
+    fi
+}
+
+get_current_version() {
+    node -p "require('./package.json').version" 2>/dev/null
+}
+
+release_sprint() {
+    echo ""
+    log_info "Starting Sprint Release Process..."
+    echo ""
+
+    # Check dependencies
+    check_release_dependencies
+    check_git_repo
+    check_gh_auth
+    check_package_json
+
+    # Check for uncommitted changes
+    check_uncommitted_changes
+
+    # Checkout develop and pull latest
+    log_info "Checking out develop branch..."
+    git checkout develop
+    git pull origin develop
+    log_success "Updated develop branch"
+
+    # Get current version
+    local current_version
+    current_version=$(get_current_version)
+
+    if [[ -z "$current_version" ]]; then
+        log_error "Could not read version from package.json"
+        exit 1
+    fi
+
+    # Calculate new version (minor bump: X.Y.Z → X.(Y+1).0)
+    local major minor patch new_version release_branch
+    IFS='.' read -r major minor patch <<< "$current_version"
+    local new_minor=$((minor + 1))
+    new_version="$major.$new_minor.0"
+    release_branch="release/v$new_version"
+
+    # Show preview and confirm BEFORE any changes
+    echo ""
+    echo -e "${CYAN}━━━ Release Preview ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "Type:    ${BOLD}Sprint Release${NC}"
+    echo -e "Version: ${BOLD}$current_version${NC} → ${GREEN}$new_version${NC}"
+    echo -e "Branch:  ${BOLD}$release_branch${NC}"
+    echo -e "Target:  ${BOLD}main${NC}"
+    echo ""
+    echo "This will:"
+    echo "  1. Create branch $release_branch"
+    echo "  2. Run npm run release:minor"
+    echo "  3. Push branch and tags to origin"
+    echo "  4. Create PR to main"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    read -p "Proceed with release? [Y/n]: " -r confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        log_warn "Cancelled by user"
+        exit 0
+    fi
+
+    echo ""
+
+    # Create release branch
+    log_info "Creating release branch: $release_branch"
+    git checkout -b "$release_branch"
+    log_success "Created branch: $release_branch"
+
+    # Run release:minor
+    log_info "Running npm run release:minor..."
+    npm run release:minor
+    log_success "Version bumped and changelog updated"
+
+    # Push branch and tags
+    log_info "Pushing release branch and tags..."
+    git push origin "$release_branch"
+    git push --tags
+    log_success "Pushed to origin"
+
+    # Create PR
+    log_info "Creating Pull Request..."
+    local pr_title="Release v$new_version"
+    local pr_body="## Sprint Release v$new_version
+
+This PR merges the sprint release for version $new_version into main branch.
+
+### Changes
+- Version bumped from $current_version to $new_version
+- Updated CHANGELOG.md with latest changes
+- Git tag v$new_version created and pushed
+
+### Checklist
+- [ ] Review changelog entries
+- [ ] Verify version bump is correct
+- [ ] All tests are passing
+- [ ] Ready for production deployment
+
+---
+*Created by pr1 release sprint*"
+
+    gh pr create \
+        --title "$pr_title" \
+        --body "$pr_body" \
+        --base main \
+        --head "$release_branch" \
+        --assignee @me
+
+    # Summary
+    echo ""
+    echo -e "${GREEN}━━━ Sprint Release Complete ━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "Version: ${BOLD}$current_version${NC} → ${GREEN}$new_version${NC}"
+    echo -e "Branch:  ${BOLD}$release_branch${NC}"
+    echo -e "PR:      ${BOLD}Created and ready for review${NC}"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Review the created Pull Request"
+    echo "  2. Merge the PR when ready"
+    echo "  3. Deploy the release"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+release_hotfix() {
+    echo ""
+    log_info "Starting Hotfix Release Process..."
+    echo ""
+
+    # Check dependencies
+    check_release_dependencies
+    check_git_repo
+    check_gh_auth
+    check_package_json
+
+    # Check for uncommitted changes
+    check_uncommitted_changes
+
+    # Checkout main and pull latest
+    log_info "Checking out main branch..."
+    git checkout main
+    git pull origin main
+    log_success "Updated main branch"
+
+    # Get current version
+    local current_version
+    current_version=$(get_current_version)
+
+    if [[ -z "$current_version" ]]; then
+        log_error "Could not read version from package.json"
+        exit 1
+    fi
+
+    # Calculate new version (patch bump: X.Y.Z → X.Y.(Z+1))
+    local major minor patch new_version hotfix_branch
+    IFS='.' read -r major minor patch <<< "$current_version"
+    local new_patch=$((patch + 1))
+    new_version="$major.$minor.$new_patch"
+    hotfix_branch="hotfix/v$new_version"
+
+    # Show preview and confirm BEFORE any changes
+    echo ""
+    echo -e "${CYAN}━━━ Release Preview ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "Type:    ${BOLD}Hotfix Release${NC}"
+    echo -e "Version: ${BOLD}$current_version${NC} → ${GREEN}$new_version${NC}"
+    echo -e "Branch:  ${BOLD}$hotfix_branch${NC}"
+    echo -e "Target:  ${BOLD}main${NC}"
+    echo ""
+    echo "This will:"
+    echo "  1. Create branch $hotfix_branch"
+    echo "  2. Run npm run release:patch"
+    echo "  3. Push branch and tags to origin"
+    echo "  4. Create PR to main"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    read -p "Proceed with release? [Y/n]: " -r confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        log_warn "Cancelled by user"
+        exit 0
+    fi
+
+    echo ""
+
+    # Create hotfix branch
+    log_info "Creating hotfix branch: $hotfix_branch"
+    git checkout -b "$hotfix_branch"
+    log_success "Created branch: $hotfix_branch"
+
+    # Run release:patch
+    log_info "Running npm run release:patch..."
+    npm run release:patch
+    log_success "Version bumped and changelog updated"
+
+    # Push branch and tags
+    log_info "Pushing hotfix branch and tags..."
+    git push origin "$hotfix_branch"
+    git push --tags
+    log_success "Pushed to origin"
+
+    # Create PR
+    log_info "Creating Pull Request..."
+    local pr_title="Hotfix v$new_version"
+    local pr_body="## Hotfix Release v$new_version
+
+This PR merges the hotfix release for version $new_version into main branch.
+
+### Changes
+- Version bumped from $current_version to $new_version
+- Updated CHANGELOG.md with latest changes
+- Git tag v$new_version created and pushed
+
+### Hotfix Details
+This is a patch release that includes critical bug fixes that need immediate deployment.
+
+### Checklist
+- [ ] Review changelog entries
+- [ ] Verify version bump is correct (patch level)
+- [ ] All tests are passing
+- [ ] Critical fixes are included
+- [ ] Ready for immediate production deployment
+
+---
+*Created by pr1 release hotfix*"
+
+    gh pr create \
+        --title "$pr_title" \
+        --body "$pr_body" \
+        --base main \
+        --head "$hotfix_branch" \
+        --assignee @me
+
+    # Summary
+    echo ""
+    echo -e "${GREEN}━━━ Hotfix Release Complete ━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "Version: ${BOLD}$current_version${NC} → ${GREEN}$new_version${NC}"
+    echo -e "Branch:  ${BOLD}$hotfix_branch${NC}"
+    echo -e "PR:      ${BOLD}Created and ready for review${NC}"
+    echo ""
+    echo "Next steps:"
+    echo "  1. Review the created Pull Request"
+    echo "  2. Merge the PR when ready"
+    echo "  3. Deploy the hotfix immediately"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+#######################################################################
 # PR Creation
 #######################################################################
 
@@ -984,6 +1312,15 @@ main() {
                 log_error "Unknown option: $1"
                 echo "Use 'pr1 --help' for usage information"
                 exit 1
+                ;;
+            release)
+                shift
+                case "${1:-}" in
+                    sprint) release_sprint ;;
+                    hotfix) release_hotfix ;;
+                    *) show_release_help ;;
+                esac
+                exit 0
                 ;;
             *)
                 log_error "Unexpected argument: $1"

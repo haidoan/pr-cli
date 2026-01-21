@@ -94,6 +94,29 @@ pr1 --init             # Creates .pr1.json template
 | `ticketPattern` | Regex for ticket extraction from branch |
 | `ticketUrl` | URL template for ticket links |
 
+## Release Commands
+
+Create release branches and PRs with version bumping:
+
+```bash
+pr1 release sprint    # Sprint release (minor bump: 1.2.0 → 1.3.0)
+pr1 release hotfix    # Hotfix release (patch bump: 1.2.3 → 1.2.4)
+```
+
+**Sprint release** (`pr1 release sprint`):
+- Branches from `develop`
+- Creates `release/vX.Y.0` branch
+- Runs `npm run release:minor`
+- Creates PR to `main`
+
+**Hotfix release** (`pr1 release hotfix`):
+- Branches from `main`
+- Creates `hotfix/vX.Y.Z` branch
+- Runs `npm run release:patch`
+- Creates PR to `main`
+
+Both commands show a preview and ask for confirmation before making any changes.
+
 ## All Options
 
 | Flag | Description |
