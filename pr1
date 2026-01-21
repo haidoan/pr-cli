@@ -842,8 +842,6 @@ PROMPT
 generate_description() {
     local prompt="$1"
     
-    log_info "Generating PR description with $AI_PROVIDER..."
-    
     local description
     case "$AI_PROVIDER" in
         claude)
