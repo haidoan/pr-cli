@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/haidoan/pr1/main/schema.json",
+  "$id": "https://raw.githubusercontent.com/haidoan/pr-cli/main/schema.json",
   "title": "pr1 Configuration",
   "description": "Configuration file for pr1 CLI tool",
   "type": "object",

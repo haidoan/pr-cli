@@ -5,7 +5,7 @@ Create GitHub PRs with AI-generated descriptions from your commits.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/haidoan/pr1/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/haidoan/pr-cli/main/install.sh | bash
 ```
 
 **Requirements:** bash, curl, jq, [GitHub CLI](https://cli.github.com/) (authenticated)

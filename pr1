@@ -21,7 +21,7 @@
 #   --init                   Create .pr1.json template in current repo
 #   -h, --help               Show help
 #
-# Repository: https://github.com/haidoan/pr1
+# Repository: https://github.com/haidoan/pr-cli
 # License: MIT
 #######################################################################
 
@@ -385,7 +385,7 @@ init_repo_config() {
 
     cat > "$REPO_CONFIG_FILE" << 'TEMPLATE'
 {
-  "$schema": "https://raw.githubusercontent.com/haidoan/pr1/main/schema.json",
+  "$schema": "https://raw.githubusercontent.com/haidoan/pr-cli/main/schema.json",
   "_comment": "pr1 - Per-repo configuration (all fields are optional)",
 
   "reviewers": [
